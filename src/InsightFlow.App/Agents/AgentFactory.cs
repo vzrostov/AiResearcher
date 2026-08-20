@@ -26,11 +26,11 @@ public sealed class AgentFactory
 
     public AgentSet Create()
     {
-        var apiKey = _configuration["OPENAI_API_KEY"];
+        var apiKey = _options.OpenAIApiKey;
         if (string.IsNullOrWhiteSpace(apiKey))
         {
             throw new InvalidOperationException(
-                "OPENAI_API_KEY is not set. Set the environment variable before running InsightFlow.");
+                "OpenAIApiKey is not set. Set the environment variable before running InsightFlow.");
         }
 
         var model = Environment.GetEnvironmentVariable("OPENAI_MODEL");
