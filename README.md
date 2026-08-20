@@ -59,7 +59,7 @@ Set an OpenAI API key in the environment:
 ### PowerShell
 
 ```powershell
-$env:OPENAI_API_KEY = "your-key"
+$env:OpenAIApiKey = "your-key"
 $env:OPENAI_MODEL = "gpt-5-mini"
 ```
 
