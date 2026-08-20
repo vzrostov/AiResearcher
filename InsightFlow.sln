@@ -1,0 +1,38 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InsightFlow.App", "src\InsightFlow.App\InsightFlow.App.csproj", "{C56A3B73-59BE-4CB0-92D4-EF9D4E9E31A2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InsightFlow.Tests", "tests\InsightFlow.Tests\InsightFlow.Tests.csproj", "{5C641D7D-F913-43FA-8C5D-A693DCD2C1BA}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{8EC462FD-D22E-90A8-E5CE-7E832BA40C5D}"
+	ProjectSection(SolutionItems) = preProject
+		.env.example = .env.example
+		.gitignore = .gitignore
+		ARCHITECTURE.md = ARCHITECTURE.md
+		README.md = README.md
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C56A3B73-59BE-4CB0-92D4-EF9D4E9E31A2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C56A3B73-59BE-4CB0-92D4-EF9D4E9E31A2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C56A3B73-59BE-4CB0-92D4-EF9D4E9E31A2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C56A3B73-59BE-4CB0-92D4-EF9D4E9E31A2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5C641D7D-F913-43FA-8C5D-A693DCD2C1BA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5C641D7D-F913-43FA-8C5D-A693DCD2C1BA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5C641D7D-F913-43FA-8C5D-A693DCD2C1BA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5C641D7D-F913-43FA-8C5D-A693DCD2C1BA}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {D049BDBA-0A27-4F26-B2C7-24180D8F5722}
+	EndGlobalSection
+EndGlobal
