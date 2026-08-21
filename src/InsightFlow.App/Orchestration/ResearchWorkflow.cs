@@ -1,26 +1,37 @@
 using InsightFlow.App.Agents;
 using InsightFlow.App.Configuration;
 using InsightFlow.App.Contracts;
-using Microsoft.Agents.AI.Workflows;
+using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 
 namespace InsightFlow.App.Orchestration;
 
 public sealed class ResearchWorkflow
 {
+    private static readonly JsonSerializerOptions s_jsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
     private readonly AgentFactory _agentFactory;
     private readonly WorkflowOptions _options;
+    private readonly OpenAIOptions _openAIOptions;
     private readonly ILogger<ResearchWorkflow> _logger;
 
     public ResearchWorkflow(
         AgentFactory agentFactory,
         IOptions<WorkflowOptions> options,
+        IOptions<OpenAIOptions> openAIOptions,
         ILogger<ResearchWorkflow> logger)
     {
         _agentFactory = agentFactory;
         _options = options.Value;
+        _openAIOptions = openAIOptions.Value;
         _logger = logger;
     }
 
@@ -30,93 +41,269 @@ public sealed class ResearchWorkflow
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Topic);
 
+        var workflowId = Guid.NewGuid();
         var agents = _agentFactory.Create();
-        var workflow = AgentWorkflowBuilder.BuildSequential(agents.InExecutionOrder);
+        var stageOutputs = new List<AgentStageOutput>();
 
-        var input = new List<ChatMessage>
+        var runOptions = new ChatClientAgentRunOptions
         {
-            new(ChatRole.User, request.ToPrompt())
+            ChatOptions = new ChatOptions
+            {
+                MaxOutputTokens = _openAIOptions.MaxOutputTokens
+            }
         };
 
-        var stageOutputs = new List<AgentStageOutput>();
-        var finalMessages = new List<ChatMessage>();
-
         _logger.LogInformation(
-            "Starting analytical workflow for topic {Topic} with {AgentCount} agents",
-            request.Topic,
-            agents.InExecutionOrder.Count);
+            "Starting analytical workflow {WorkflowId} for topic {Topic}",
+            workflowId,
+            request.Topic);
 
-        cancellationToken.ThrowIfCancellationRequested();
-
-        await using StreamingRun run = await InProcessExecution.RunStreamingAsync(workflow, input);
-        await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
-
-        string? currentAgent = null;
-        var currentBuffer = new System.Text.StringBuilder();
-
-        await foreach (var evt in run.WatchStreamAsync())
+        var researchInput = new ResearchInput
         {
-            switch (evt)
+            WorkflowId = workflowId,
+            StepId = Guid.NewGuid(),
+            Request = request
+        };
+
+        var researchResult = await RunAgentAsync(
+            "Researcher",
+            researchInput.StepId,
+            async () =>
             {
-                case AgentResponseUpdateEvent update:
-                    if (!string.Equals(currentAgent, update.ExecutorId, StringComparison.Ordinal))
+                var response = await agents.Researcher.RunAsync<ResearchPayload>(
+                    SerializeInput(researchInput),
+                    options: runOptions,
+                    cancellationToken: cancellationToken);
+
+                var payload = response.Result; 
+
+                return new ResearchResult
+                {
+                    Id = Guid.NewGuid(),
+                    WorkflowId = workflowId,
+                    StepId = researchInput.StepId,
+                    ProducedByAgent = "Researcher",
+                    ProducedAt = DateTimeOffset.UtcNow,
+                    Findings = payload.Findings
+                };
+            });
+        AddStageOutput(stageOutputs, "Researcher", researchResult);
+
+
+        var analysisStepId = Guid.NewGuid();
+
+        var analysisResult = await RunAgentAsync(
+            "Analyst",
+            analysisStepId,
+            async () =>
+            {
+                var response = await agents.Analyst.RunAsync<AnalysisPayload>(
+                    SerializeInput(new
                     {
-                        FlushStage(stageOutputs, currentAgent, currentBuffer);
-                        currentAgent = update.ExecutorId;
+                        WorkflowId = workflowId,
+                        StepId = analysisStepId,
+                        Research = researchResult
+                    }),
+                    options: runOptions,
+                    cancellationToken: cancellationToken);
 
-                        if (_options.EmitAgentOutput)
-                        {
-                            Console.WriteLine();
-                            Console.WriteLine($"--- {currentAgent} ---");
-                        }
-                    }
+                var payload = response.Result;
 
-                    if (!string.IsNullOrEmpty(update.Update.Text))
+                return new AnalysisResult
+                {
+                    Id = Guid.NewGuid(),
+                    WorkflowId = workflowId,
+                    StepId = analysisStepId,
+                    ProducedByAgent = "Analyst",
+                    ProducedAt = DateTimeOffset.UtcNow,
+                    ParentResultIds = [researchResult.Id],
+                    Conclusions = payload.Conclusions
+                        .Select(conclusion => new AnalysisConclusion(
+                            conclusion,
+                            [researchResult.Id]))
+                        .ToArray()
+                };
+            });
+
+        AddStageOutput(stageOutputs, "Analyst", analysisResult);
+
+
+        var factCheckStepId = Guid.NewGuid();
+
+        var factCheckResult = await RunAgentAsync(
+            "FactChecker",
+            factCheckStepId,
+            async () =>
+            {
+                var response = await agents.FactChecker.RunAsync<FactCheckPayload>(
+                    SerializeInput(new
                     {
-                        currentBuffer.Append(update.Update.Text);
+                        WorkflowId = workflowId,
+                        StepId = factCheckStepId,
+                        Research = researchResult,
+                        Analysis = analysisResult
+                    }),
+                    options: runOptions,
+                    cancellationToken: cancellationToken);
 
-                        if (_options.EmitAgentOutput)
-                        {
-                            Console.Write(update.Update.Text);
-                        }
-                    }
-                    break;
+                var payload = response.Result;
 
-                case WorkflowOutputEvent output:
-                    FlushStage(stageOutputs, currentAgent, currentBuffer);
+                return new FactCheckResult
+                {
+                    Id = Guid.NewGuid(),
+                    WorkflowId = workflowId,
+                    StepId = factCheckStepId,
+                    ProducedByAgent = "FactChecker",
+                    ProducedAt = DateTimeOffset.UtcNow,
+                    ParentResultIds = [researchResult.Id, analysisResult.Id],
+                    Items = payload.Items
+                };
+            });
 
-                    var messages = output.As<List<ChatMessage>>();
-                    if (messages is not null)
+        AddStageOutput(stageOutputs, "FactChecker", factCheckResult);
+
+
+        var criticStepId = Guid.NewGuid();
+
+        var criticResult = await RunAgentAsync(
+            "Critic",
+            criticStepId,
+            async () =>
+            {
+                var response = await agents.Critic.RunAsync<CriticPayload>(
+                    SerializeInput(new
                     {
-                        finalMessages.AddRange(messages);
-                    }
-                    break;
-            }
-        }
+                        WorkflowId = workflowId,
+                        StepId = criticStepId,
+                        Analysis = analysisResult,
+                        FactCheck = factCheckResult
+                    }),
+                    options: runOptions,
+                    cancellationToken: cancellationToken);
 
-        var finalText = finalMessages.LastOrDefault(static m => m.Role == ChatRole.Assistant)?.Text
-            ?? stageOutputs.LastOrDefault()?.Text
-            ?? string.Empty;
+                var payload = response.Result;
+
+                return new CriticResult
+                {
+                    Id = Guid.NewGuid(),
+                    WorkflowId = workflowId,
+                    StepId = criticStepId,
+                    ProducedByAgent = "Critic",
+                    ProducedAt = DateTimeOffset.UtcNow,
+                    ParentResultIds = [analysisResult.Id, factCheckResult.Id],
+                    Issues = payload.Issues,
+                    HasBlockingIssues = payload.HasBlockingIssues
+                };
+            });
+
+        AddStageOutput(stageOutputs, "Critic", criticResult);
+
+
+        var editorInput = new EditorInput
+        {
+            WorkflowId = workflowId,
+            StepId = Guid.NewGuid(),
+            Analysis = analysisResult,
+            FactCheck = factCheckResult,
+            Critic = criticResult
+        };
+
+        var editorResult = await RunAgentAsync(
+            "Editor",
+            editorInput.StepId,
+            async () =>
+            {
+                var response = await agents.Editor.RunAsync<EditorPayload>(
+                    SerializeInput(editorInput),
+                    options: runOptions,
+                    cancellationToken: cancellationToken);
+
+                var payload = response.Result;
+
+                return new EditorResult
+                {
+                    Id = Guid.NewGuid(),
+                    WorkflowId = workflowId,
+                    StepId = editorInput.StepId,
+                    ProducedByAgent = "Editor",
+                    ProducedAt = DateTimeOffset.UtcNow,
+                    ParentResultIds = [analysisResult.Id, factCheckResult.Id, criticResult.Id],
+                    Content = payload.Content
+                };
+            });
+
+        AddStageOutput(stageOutputs, "Editor", editorResult);
 
         _logger.LogInformation(
-            "Analytical workflow completed for topic {Topic}; stages captured: {StageCount}",
-            request.Topic,
-            stageOutputs.Count);
+            "Analytical workflow {WorkflowId} completed for topic {Topic}",
+            workflowId,
+            request.Topic);
 
-        return new WorkflowResult(finalText, stageOutputs);
+        return new WorkflowResult(editorResult.Content, stageOutputs);
     }
 
-    private static void FlushStage(
-        ICollection<AgentStageOutput> outputs,
-        string? agentName,
-        System.Text.StringBuilder buffer)
+
+    private async Task<T> RunAgentAsync<T>(
+        string agentName,
+        Guid stepId,
+        Func<Task<T>> action)
     {
-        if (string.IsNullOrWhiteSpace(agentName) || buffer.Length == 0)
+        try
         {
-            return;
+            return await action();
         }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning(
+                "Agent {AgentName} execution was cancelled. StepId: {StepId}",
+                agentName,
+                stepId);
 
-        outputs.Add(new AgentStageOutput(agentName, buffer.ToString().Trim()));
-        buffer.Clear();
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Agent {AgentName} execution failed. StepId: {StepId}",
+                agentName,
+                stepId);
+
+            throw;
+        }
     }
+
+    private string SerializeInput<T>(T input) =>
+        JsonSerializer.Serialize(input, s_jsonOptions);
+
+    private void AddStageOutput<T>(
+        ICollection<AgentStageOutput> outputs,
+        string agentName,
+        T result)
+    {
+        var text = result is EditorResult editor
+            ? editor.Content
+            : JsonSerializer.Serialize(result, s_jsonOptions);
+
+        outputs.Add(new AgentStageOutput(agentName, text));
+
+        if (_options.EmitAgentOutput)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"--- {agentName} ---");
+            Console.WriteLine(text);
+        }
+    }
+
+    private sealed record ResearchPayload(List<ResearchFinding> Findings);
+
+    private sealed record AnalysisPayload(List<string> Conclusions);
+
+    private sealed record FactCheckPayload(List<FactCheckItem> Items);
+
+    private sealed record CriticPayload(
+        List<CriticIssue> Issues,
+        bool HasBlockingIssues);
+
+    private sealed record EditorPayload(string Content);
 }

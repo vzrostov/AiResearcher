@@ -6,4 +6,5 @@ public sealed class OpenAIOptions
 
     public string Model { get; init; } = "gpt-5-mini";
     public string OpenAIApiKey { get; init; } = string.Empty;
+    public int? MaxOutputTokens { get; init; }
 }
