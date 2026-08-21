@@ -1,8 +1,6 @@
 using InsightFlow.App.Agents;
 using InsightFlow.App.Configuration;
 using InsightFlow.App.Contracts;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text.Encodings.Web;
@@ -41,13 +39,19 @@ public sealed class ResearchWorkflow
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Topic);
 
-        var workflowId = Guid.NewGuid();
+        var state = new WorkflowState
+        {
+            WorkflowId = Guid.NewGuid(),
+            Status = WorkflowStatus.Running,
+            CurrentStep = WorkflowStep.Research
+        };
+
         var agents = _agentFactory.Create();
         var stageOutputs = new List<AgentStageOutput>();
 
-        var runOptions = new ChatClientAgentRunOptions
+        var runOptions = new Microsoft.Agents.AI.ChatClientAgentRunOptions
         {
-            ChatOptions = new ChatOptions
+            ChatOptions = new Microsoft.Extensions.AI.ChatOptions
             {
                 MaxOutputTokens = _openAIOptions.MaxOutputTokens
             }
@@ -55,193 +59,217 @@ public sealed class ResearchWorkflow
 
         _logger.LogInformation(
             "Starting analytical workflow {WorkflowId} for topic {Topic}",
-            workflowId,
+            state.WorkflowId,
             request.Topic);
 
-        var researchInput = new ResearchInput
+        try
         {
-            WorkflowId = workflowId,
-            StepId = Guid.NewGuid(),
-            Request = request
-        };
-
-        var researchResult = await RunAgentAsync(
-            "Researcher",
-            researchInput.StepId,
-            async () =>
+            var researchInput = new ResearchInput
             {
-                var response = await agents.Researcher.RunAsync<ResearchPayload>(
-                    SerializeInput(researchInput),
-                    options: runOptions,
-                    cancellationToken: cancellationToken);
+                WorkflowId = state.WorkflowId,
+                StepId = Guid.NewGuid(),
+                Request = request
+            };
 
-                var payload = response.Result; 
-
-                return new ResearchResult
+            var researchResult = await RunAgentAsync(
+                "Researcher",
+                researchInput.StepId,
+                async () =>
                 {
-                    Id = Guid.NewGuid(),
-                    WorkflowId = workflowId,
-                    StepId = researchInput.StepId,
-                    ProducedByAgent = "Researcher",
-                    ProducedAt = DateTimeOffset.UtcNow,
-                    Findings = payload.Findings
-                };
-            });
-        AddStageOutput(stageOutputs, "Researcher", researchResult);
+                    var response = await agents.Researcher.RunAsync<ResearchPayload>(
+                        SerializeInput(researchInput),
+                        options: runOptions,
+                        cancellationToken: cancellationToken);
 
+                    var payload = response.Result;
 
-        var analysisStepId = Guid.NewGuid();
-
-        var analysisResult = await RunAgentAsync(
-            "Analyst",
-            analysisStepId,
-            async () =>
-            {
-                var response = await agents.Analyst.RunAsync<AnalysisPayload>(
-                    SerializeInput(new
+                    return new ResearchResult
                     {
-                        WorkflowId = workflowId,
+                        Id = Guid.NewGuid(),
+                        WorkflowId = state.WorkflowId,
+                        StepId = researchInput.StepId,
+                        ProducedByAgent = "Researcher",
+                        ProducedAt = DateTimeOffset.UtcNow,
+                        Findings = payload.Findings
+                    };
+                });
+
+            state.Results.Add(researchResult);
+            AddStageOutput(stageOutputs, "Researcher", researchResult);
+
+            state.CurrentStep = WorkflowStep.Analysis;
+            var analysisStepId = Guid.NewGuid();
+
+            var analysisResult = await RunAgentAsync(
+                "Analyst",
+                analysisStepId,
+                async () =>
+                {
+                    var response = await agents.Analyst.RunAsync<AnalysisPayload>(
+                        SerializeInput(new
+                        {
+                            WorkflowId = state.WorkflowId,
+                            StepId = analysisStepId,
+                            Research = researchResult
+                        }),
+                        options: runOptions,
+                        cancellationToken: cancellationToken);
+
+                    var payload = response.Result;
+
+                    return new AnalysisResult
+                    {
+                        Id = Guid.NewGuid(),
+                        WorkflowId = state.WorkflowId,
                         StepId = analysisStepId,
-                        Research = researchResult
-                    }),
-                    options: runOptions,
-                    cancellationToken: cancellationToken);
+                        ProducedByAgent = "Analyst",
+                        ProducedAt = DateTimeOffset.UtcNow,
+                        ParentResultIds = [researchResult.Id],
+                        Conclusions = payload.Conclusions
+                            .Select(conclusion => new AnalysisConclusion(
+                                conclusion,
+                                [researchResult.Id]))
+                            .ToArray()
+                    };
+                });
 
-                var payload = response.Result;
+            state.Results.Add(analysisResult);
+            AddStageOutput(stageOutputs, "Analyst", analysisResult);
 
-                return new AnalysisResult
+            state.CurrentStep = WorkflowStep.FactCheck;
+            var factCheckStepId = Guid.NewGuid();
+
+            var factCheckResult = await RunAgentAsync(
+                "FactChecker",
+                factCheckStepId,
+                async () =>
                 {
-                    Id = Guid.NewGuid(),
-                    WorkflowId = workflowId,
-                    StepId = analysisStepId,
-                    ProducedByAgent = "Analyst",
-                    ProducedAt = DateTimeOffset.UtcNow,
-                    ParentResultIds = [researchResult.Id],
-                    Conclusions = payload.Conclusions
-                        .Select(conclusion => new AnalysisConclusion(
-                            conclusion,
-                            [researchResult.Id]))
-                        .ToArray()
-                };
-            });
+                    var response = await agents.FactChecker.RunAsync<FactCheckPayload>(
+                        SerializeInput(new
+                        {
+                            WorkflowId = state.WorkflowId,
+                            StepId = factCheckStepId,
+                            Research = researchResult,
+                            Analysis = analysisResult
+                        }),
+                        options: runOptions,
+                        cancellationToken: cancellationToken);
 
-        AddStageOutput(stageOutputs, "Analyst", analysisResult);
+                    var payload = response.Result;
 
-
-        var factCheckStepId = Guid.NewGuid();
-
-        var factCheckResult = await RunAgentAsync(
-            "FactChecker",
-            factCheckStepId,
-            async () =>
-            {
-                var response = await agents.FactChecker.RunAsync<FactCheckPayload>(
-                    SerializeInput(new
+                    return new FactCheckResult
                     {
-                        WorkflowId = workflowId,
+                        Id = Guid.NewGuid(),
+                        WorkflowId = state.WorkflowId,
                         StepId = factCheckStepId,
-                        Research = researchResult,
-                        Analysis = analysisResult
-                    }),
-                    options: runOptions,
-                    cancellationToken: cancellationToken);
+                        ProducedByAgent = "FactChecker",
+                        ProducedAt = DateTimeOffset.UtcNow,
+                        ParentResultIds = [researchResult.Id, analysisResult.Id],
+                        Items = payload.Items
+                    };
+                });
 
-                var payload = response.Result;
+            state.Results.Add(factCheckResult);
+            AddStageOutput(stageOutputs, "FactChecker", factCheckResult);
 
-                return new FactCheckResult
+            state.CurrentStep = WorkflowStep.Critic;
+            var criticStepId = Guid.NewGuid();
+
+            var criticResult = await RunAgentAsync(
+                "Critic",
+                criticStepId,
+                async () =>
                 {
-                    Id = Guid.NewGuid(),
-                    WorkflowId = workflowId,
-                    StepId = factCheckStepId,
-                    ProducedByAgent = "FactChecker",
-                    ProducedAt = DateTimeOffset.UtcNow,
-                    ParentResultIds = [researchResult.Id, analysisResult.Id],
-                    Items = payload.Items
-                };
-            });
+                    var response = await agents.Critic.RunAsync<CriticPayload>(
+                        SerializeInput(new
+                        {
+                            WorkflowId = state.WorkflowId,
+                            StepId = criticStepId,
+                            Analysis = analysisResult,
+                            FactCheck = factCheckResult
+                        }),
+                        options: runOptions,
+                        cancellationToken: cancellationToken);
 
-        AddStageOutput(stageOutputs, "FactChecker", factCheckResult);
+                    var payload = response.Result;
 
-
-        var criticStepId = Guid.NewGuid();
-
-        var criticResult = await RunAgentAsync(
-            "Critic",
-            criticStepId,
-            async () =>
-            {
-                var response = await agents.Critic.RunAsync<CriticPayload>(
-                    SerializeInput(new
+                    return new CriticResult
                     {
-                        WorkflowId = workflowId,
+                        Id = Guid.NewGuid(),
+                        WorkflowId = state.WorkflowId,
                         StepId = criticStepId,
-                        Analysis = analysisResult,
-                        FactCheck = factCheckResult
-                    }),
-                    options: runOptions,
-                    cancellationToken: cancellationToken);
+                        ProducedByAgent = "Critic",
+                        ProducedAt = DateTimeOffset.UtcNow,
+                        ParentResultIds = [analysisResult.Id, factCheckResult.Id],
+                        Issues = payload.Issues,
+                        HasBlockingIssues = payload.HasBlockingIssues
+                    };
+                });
 
-                var payload = response.Result;
+            state.Results.Add(criticResult);
+            AddStageOutput(stageOutputs, "Critic", criticResult);
 
-                return new CriticResult
-                {
-                    Id = Guid.NewGuid(),
-                    WorkflowId = workflowId,
-                    StepId = criticStepId,
-                    ProducedByAgent = "Critic",
-                    ProducedAt = DateTimeOffset.UtcNow,
-                    ParentResultIds = [analysisResult.Id, factCheckResult.Id],
-                    Issues = payload.Issues,
-                    HasBlockingIssues = payload.HasBlockingIssues
-                };
-            });
+            state.CurrentStep = WorkflowStep.Editing;
 
-        AddStageOutput(stageOutputs, "Critic", criticResult);
-
-
-        var editorInput = new EditorInput
-        {
-            WorkflowId = workflowId,
-            StepId = Guid.NewGuid(),
-            Analysis = analysisResult,
-            FactCheck = factCheckResult,
-            Critic = criticResult
-        };
-
-        var editorResult = await RunAgentAsync(
-            "Editor",
-            editorInput.StepId,
-            async () =>
+            var editorInput = new EditorInput
             {
-                var response = await agents.Editor.RunAsync<EditorPayload>(
-                    SerializeInput(editorInput),
-                    options: runOptions,
-                    cancellationToken: cancellationToken);
+                WorkflowId = state.WorkflowId,
+                StepId = Guid.NewGuid(),
+                Analysis = analysisResult,
+                FactCheck = factCheckResult,
+                Critic = criticResult
+            };
 
-                var payload = response.Result;
-
-                return new EditorResult
+            var editorResult = await RunAgentAsync(
+                "Editor",
+                editorInput.StepId,
+                async () =>
                 {
-                    Id = Guid.NewGuid(),
-                    WorkflowId = workflowId,
-                    StepId = editorInput.StepId,
-                    ProducedByAgent = "Editor",
-                    ProducedAt = DateTimeOffset.UtcNow,
-                    ParentResultIds = [analysisResult.Id, factCheckResult.Id, criticResult.Id],
-                    Content = payload.Content
-                };
-            });
+                    var response = await agents.Editor.RunAsync<EditorPayload>(
+                        SerializeInput(editorInput),
+                        options: runOptions,
+                        cancellationToken: cancellationToken);
 
-        AddStageOutput(stageOutputs, "Editor", editorResult);
+                    var payload = response.Result;
 
-        _logger.LogInformation(
-            "Analytical workflow {WorkflowId} completed for topic {Topic}",
-            workflowId,
-            request.Topic);
+                    return new EditorResult
+                    {
+                        Id = Guid.NewGuid(),
+                        WorkflowId = state.WorkflowId,
+                        StepId = editorInput.StepId,
+                        ProducedByAgent = "Editor",
+                        ProducedAt = DateTimeOffset.UtcNow,
+                        ParentResultIds = [analysisResult.Id, factCheckResult.Id, criticResult.Id],
+                        Content = payload.Content
+                    };
+                });
 
-        return new WorkflowResult(editorResult.Content, stageOutputs);
+            state.Results.Add(editorResult);
+            state.Status = WorkflowStatus.Completed;
+
+            AddStageOutput(stageOutputs, "Editor", editorResult);
+
+            _logger.LogInformation(
+                "Analytical workflow {WorkflowId} completed for topic {Topic}",
+                state.WorkflowId,
+                request.Topic);
+
+            return new WorkflowResult(editorResult.Content, stageOutputs);
+        }
+        catch (Exception exception)
+        {
+            state.Status = WorkflowStatus.Failed;
+            state.Error = exception.Message;
+
+            _logger.LogError(
+                exception,
+                "Analytical workflow {WorkflowId} failed at step {WorkflowStep}",
+                state.WorkflowId,
+                state.CurrentStep);
+
+            throw;
+        }
     }
-
 
     private async Task<T> RunAgentAsync<T>(
         string agentName,
