@@ -39,7 +39,7 @@ public sealed class ResearchWorkflow
         _logger = logger;
     }
 
-    public async Task<WorkflowResult> RunAsync(
+    public Task<WorkflowResult> RunAsync(
         ResearchRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -52,6 +52,60 @@ public sealed class ResearchWorkflow
             CurrentStep = WorkflowStep.Research
         };
 
+        return RunPipelineAsync(
+            request,
+            state,
+            isResume: false,
+            cancellationToken);
+    }
+
+    public async Task<WorkflowResult> ResumeAsync(
+        Guid workflowId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+
+        var execution = await db.WorkflowExecutions
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                x => x.WorkflowId == workflowId,
+                cancellationToken)
+            ?? throw new InvalidOperationException(
+                $"Workflow '{workflowId}' was not found.");
+
+        if (execution.Status == WorkflowStatus.Completed)
+        {
+            throw new InvalidOperationException(
+                $"Workflow '{workflowId}' is already completed.");
+        }
+
+        var request = JsonSerializer.Deserialize<ResearchRequest>(
+                          execution.RequestJson,
+                          s_jsonOptions)
+                      ?? throw new InvalidOperationException(
+                          $"Stored request for workflow '{workflowId}' is empty.");
+
+        var state = new WorkflowState
+        {
+            WorkflowId = execution.WorkflowId,
+            Status = WorkflowStatus.Running,
+            CurrentStep = execution.CurrentStep,
+            Error = null
+        };
+
+        return await RunPipelineAsync(
+            request,
+            state,
+            isResume: true,
+            cancellationToken);
+    }
+
+    private async Task<WorkflowResult> RunPipelineAsync(
+        ResearchRequest request,
+        WorkflowState state,
+        bool isResume,
+        CancellationToken cancellationToken)
+    {
         var agents = _agentFactory.Create();
         var stageOutputs = new List<AgentStageOutput>();
 
@@ -63,14 +117,25 @@ public sealed class ResearchWorkflow
             }
         };
 
-        _logger.LogInformation(
-            "Starting analytical workflow {WorkflowId} for topic {Topic}",
-            state.WorkflowId,
-            request.Topic);
+        if (isResume)
+        {
+            _logger.LogInformation(
+                "Resuming analytical workflow {WorkflowId} from step {WorkflowStep} for topic {Topic}",
+                state.WorkflowId,
+                state.CurrentStep,
+                request.Topic);
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Starting analytical workflow {WorkflowId} for topic {Topic}",
+                state.WorkflowId,
+                request.Topic);
+        }
 
         await PersistStateAsync(
             state,
-            request.Topic,
+            request,
             result: null,
             cancellationToken);
 
@@ -78,7 +143,7 @@ public sealed class ResearchWorkflow
         {
             var researchResult = await ExecuteStepAsync(
                 state,
-                request.Topic,
+                request,
                 WorkflowStep.Research,
                 WorkflowStep.Analysis,
                 "Researcher",
@@ -114,7 +179,7 @@ public sealed class ResearchWorkflow
 
             var analysisResult = await ExecuteStepAsync(
                 state,
-                request.Topic,
+                request,
                 WorkflowStep.Analysis,
                 WorkflowStep.FactCheck,
                 "Analyst",
@@ -153,7 +218,7 @@ public sealed class ResearchWorkflow
 
             var factCheckResult = await ExecuteStepAsync(
                 state,
-                request.Topic,
+                request,
                 WorkflowStep.FactCheck,
                 WorkflowStep.Critic,
                 "FactChecker",
@@ -189,7 +254,7 @@ public sealed class ResearchWorkflow
 
             var criticResult = await ExecuteStepAsync(
                 state,
-                request.Topic,
+                request,
                 WorkflowStep.Critic,
                 WorkflowStep.Editing,
                 "Critic",
@@ -226,9 +291,9 @@ public sealed class ResearchWorkflow
 
             var editorResult = await ExecuteStepAsync(
                 state,
-                request.Topic,
+                request,
                 WorkflowStep.Editing,
-                null,
+                nextStep: null,
                 "Editor",
                 async stepId =>
                 {
@@ -277,7 +342,7 @@ public sealed class ResearchWorkflow
 
             await PersistStateAsync(
                 state,
-                request.Topic,
+                request,
                 result: null,
                 CancellationToken.None);
 
@@ -293,7 +358,7 @@ public sealed class ResearchWorkflow
 
     private async Task<T> ExecuteStepAsync<T>(
         WorkflowState state,
-        string topic,
+        ResearchRequest request,
         WorkflowStep step,
         WorkflowStep? nextStep,
         string agentName,
@@ -321,7 +386,7 @@ public sealed class ResearchWorkflow
 
             await PersistStateAsync(
                 state,
-                topic,
+                request,
                 result: null,
                 cancellationToken);
 
@@ -338,7 +403,7 @@ public sealed class ResearchWorkflow
 
         await PersistStateAsync(
             state,
-            topic,
+            request,
             result,
             cancellationToken);
 
@@ -405,7 +470,7 @@ public sealed class ResearchWorkflow
 
     private async Task PersistStateAsync(
         WorkflowState state,
-        string topic,
+        ResearchRequest request,
         BaseAgentResult? result,
         CancellationToken cancellationToken)
     {
@@ -422,7 +487,8 @@ public sealed class ResearchWorkflow
             execution = new WorkflowExecutionEntity
             {
                 WorkflowId = state.WorkflowId,
-                Topic = topic,
+                Topic = request.Topic,
+                RequestJson = SerializeInput(request),
                 Status = state.Status,
                 CurrentStep = state.CurrentStep,
                 Error = state.Error,
@@ -434,6 +500,8 @@ public sealed class ResearchWorkflow
         }
         else
         {
+            execution.Topic = request.Topic;
+            execution.RequestJson = SerializeInput(request);
             execution.Status = state.Status;
             execution.CurrentStep = state.CurrentStep;
             execution.Error = state.Error;

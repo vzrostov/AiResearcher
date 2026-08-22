@@ -8,6 +8,8 @@ public sealed class WorkflowExecutionEntity
 
     public required string Topic { get; set; }
 
+    public required string RequestJson { get; set; }
+
     public WorkflowStatus Status { get; set; }
 
     public WorkflowStep CurrentStep { get; set; }

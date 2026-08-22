@@ -20,6 +20,7 @@ public sealed class InsightFlowDbContext(
             entity.HasKey(x => x.WorkflowId);
 
             entity.Property(x => x.Topic).IsRequired();
+            entity.Property(x => x.RequestJson).IsRequired();
             entity.Property(x => x.Status).HasConversion<string>();
             entity.Property(x => x.CurrentStep).HasConversion<string>();
 
