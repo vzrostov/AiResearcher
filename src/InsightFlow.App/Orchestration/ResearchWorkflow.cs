@@ -11,6 +11,7 @@ using InsightFlow.App.Logging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Text.Encodings.Web;
 
 namespace InsightFlow.App.Orchestration;
 
@@ -18,7 +19,8 @@ public sealed class ResearchWorkflow
 {
     private static readonly JsonSerializerOptions s_jsonOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
     private readonly AgentFactory _agentFactory;
