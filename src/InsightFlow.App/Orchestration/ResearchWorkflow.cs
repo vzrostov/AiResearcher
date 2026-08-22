@@ -6,9 +6,12 @@ using InsightFlow.App.Configuration;
 using InsightFlow.App.Contracts;
 using InsightFlow.App.Persistence;
 using InsightFlow.App.Persistence.Entities;
+using InsightFlow.App.Quality;
+using InsightFlow.App.Logging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Text.Encodings.Web;
 
 namespace InsightFlow.App.Orchestration;
 
@@ -16,13 +19,16 @@ public sealed class ResearchWorkflow
 {
     private static readonly JsonSerializerOptions s_jsonOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
     private readonly AgentFactory _agentFactory;
     private readonly WorkflowOptions _options;
     private readonly OpenAIOptions _openAIOptions;
     private readonly IDbContextFactory<InsightFlowDbContext> _dbContextFactory;
+    private readonly QualityChecker _qualityChecker;
+    private readonly WorkflowDiagramWriter _workflowDiagramWriter;
     private readonly ILogger<ResearchWorkflow> _logger;
 
     public ResearchWorkflow(
@@ -30,12 +36,16 @@ public sealed class ResearchWorkflow
         IOptions<WorkflowOptions> options,
         IOptions<OpenAIOptions> openAIOptions,
         IDbContextFactory<InsightFlowDbContext> dbContextFactory,
+        QualityChecker qualityChecker,
+        WorkflowDiagramWriter workflowDiagramWriter,
         ILogger<ResearchWorkflow> logger)
     {
         _agentFactory = agentFactory;
         _options = options.Value;
         _openAIOptions = openAIOptions.Value;
         _dbContextFactory = dbContextFactory;
+        _qualityChecker = qualityChecker;
+        _workflowDiagramWriter = workflowDiagramWriter;
         _logger = logger;
     }
 
@@ -133,6 +143,11 @@ public sealed class ResearchWorkflow
                 request.Topic);
         }
 
+        await _workflowDiagramWriter.StartAsync(
+            state.WorkflowId,
+            request,
+            cancellationToken);
+
         await PersistStateAsync(
             state,
             request,
@@ -162,6 +177,32 @@ public sealed class ResearchWorkflow
                         cancellationToken: cancellationToken);
 
                     var payload = response.Result;
+                    ValidateResearchPayload(payload);
+
+                    var sources = payload.Sources
+                        .Select(source => new SourceReference(
+                            Guid.NewGuid(),
+                            source.Url,
+                            source.Title,
+                            source.PublishedAt,
+                            DateTimeOffset.UtcNow))
+                        .ToArray();
+
+                    var sourceByKey = payload.Sources
+                        .Select((source, index) => new { source.Key, Source = sources[index] })
+                        .ToDictionary(x => x.Key, x => x.Source, StringComparer.Ordinal);
+
+                    var findings = payload.Findings
+                        .Select(finding => new ResearchFinding(
+                            Guid.NewGuid(),
+                            finding.Claim,
+                            finding.Evidence,
+                            finding.SourceKeys
+                                .Select(key => sourceByKey[key].Id)
+                                .Distinct()
+                                .ToArray(),
+                            finding.Confidence))
+                        .ToArray();
 
                     return new ResearchResult
                     {
@@ -170,12 +211,18 @@ public sealed class ResearchWorkflow
                         StepId = stepId,
                         ProducedByAgent = "Researcher",
                         ProducedAt = DateTimeOffset.UtcNow,
-                        Findings = payload.Findings
+                        Sources = sources,
+                        Findings = findings
                     };
                 },
                 cancellationToken);
 
             AddStageOutput(stageOutputs, "Researcher", researchResult);
+
+            await _workflowDiagramWriter.ResearchCompletedAsync(
+                state.WorkflowId,
+                researchResult,
+                cancellationToken);
 
             var analysisResult = await ExecuteStepAsync(
                 state,
@@ -196,6 +243,7 @@ public sealed class ResearchWorkflow
                         cancellationToken: cancellationToken);
 
                     var payload = response.Result;
+                    ValidateAnalysisPayload(payload, researchResult);
 
                     return new AnalysisResult
                     {
@@ -207,14 +255,20 @@ public sealed class ResearchWorkflow
                         ParentResultIds = [researchResult.Id],
                         Conclusions = payload.Conclusions
                             .Select(conclusion => new AnalysisConclusion(
-                                conclusion,
-                                [researchResult.Id]))
+                                Guid.NewGuid(),
+                                conclusion.Conclusion,
+                                conclusion.SupportingFindingIds.Distinct().ToArray()))
                             .ToArray()
                     };
                 },
                 cancellationToken);
 
             AddStageOutput(stageOutputs, "Analyst", analysisResult);
+
+            await _workflowDiagramWriter.AnalysisCompletedAsync(
+                state.WorkflowId,
+                analysisResult,
+                cancellationToken);
 
             var factCheckResult = await ExecuteStepAsync(
                 state,
@@ -236,6 +290,7 @@ public sealed class ResearchWorkflow
                         cancellationToken: cancellationToken);
 
                     var payload = response.Result;
+                    ValidateFactCheckPayload(payload, analysisResult);
 
                     return new FactCheckResult
                     {
@@ -252,6 +307,11 @@ public sealed class ResearchWorkflow
 
             AddStageOutput(stageOutputs, "FactChecker", factCheckResult);
 
+            await _workflowDiagramWriter.FactCheckCompletedAsync(
+                state.WorkflowId,
+                factCheckResult,
+                cancellationToken);
+
             var criticResult = await ExecuteStepAsync(
                 state,
                 request,
@@ -265,6 +325,7 @@ public sealed class ResearchWorkflow
                         {
                             WorkflowId = state.WorkflowId,
                             StepId = stepId,
+                            Research = researchResult,
                             Analysis = analysisResult,
                             FactCheck = factCheckResult
                         }),
@@ -272,6 +333,7 @@ public sealed class ResearchWorkflow
                         cancellationToken: cancellationToken);
 
                     var payload = response.Result;
+                    ValidateCriticPayload(payload, researchResult, analysisResult);
 
                     return new CriticResult
                     {
@@ -280,14 +342,57 @@ public sealed class ResearchWorkflow
                         StepId = stepId,
                         ProducedByAgent = "Critic",
                         ProducedAt = DateTimeOffset.UtcNow,
-                        ParentResultIds = [analysisResult.Id, factCheckResult.Id],
+                        ParentResultIds = [researchResult.Id, analysisResult.Id, factCheckResult.Id],
                         Issues = payload.Issues,
+                        Conflicts = payload.Conflicts,
                         HasBlockingIssues = payload.HasBlockingIssues
                     };
                 },
                 cancellationToken);
 
             AddStageOutput(stageOutputs, "Critic", criticResult);
+
+            await _workflowDiagramWriter.CriticCompletedAsync(
+                state.WorkflowId,
+                criticResult,
+                cancellationToken);
+
+            var qualityCheckerResult = _qualityChecker.Evaluate(
+                researchResult,
+                analysisResult,
+                factCheckResult,
+                criticResult);
+
+            AddStageOutput(stageOutputs, "QualityChecker", qualityCheckerResult);
+
+            await _workflowDiagramWriter.QualityCheckerCompletedAsync(
+                state.WorkflowId,
+                qualityCheckerResult,
+                cancellationToken);
+
+            if (qualityCheckerResult.Decision == QualityCheckerDecision.Reject)
+            {
+                state.Status = WorkflowStatus.Completed;
+
+                await PersistStateAsync(
+                    state,
+                    request,
+                    result: null,
+                    cancellationToken);
+
+                _logger.LogWarning(
+                    "Analytical workflow {WorkflowId} was rejected by QualityChecker: {Reasons}",
+                    state.WorkflowId,
+                    string.Join("; ", qualityCheckerResult.Reasons));
+
+                await _workflowDiagramWriter.RejectedAsync(
+                    state.WorkflowId,
+                    cancellationToken);
+
+                return new WorkflowResult(
+                    BuildQualityCheckerRejection(qualityCheckerResult),
+                    stageOutputs);
+            }
 
             var editorResult = await ExecuteStepAsync(
                 state,
@@ -303,7 +408,8 @@ public sealed class ResearchWorkflow
                         StepId = stepId,
                         Analysis = analysisResult,
                         FactCheck = factCheckResult,
-                        Critic = criticResult
+                        Critic = criticResult,
+                        QualityChecker = qualityCheckerResult
                     };
 
                     var response = await agents.Editor.RunAsync<EditorPayload>(
@@ -312,6 +418,7 @@ public sealed class ResearchWorkflow
                         cancellationToken: cancellationToken);
 
                     var payload = response.Result;
+                    ValidateEditorPayload(payload);
 
                     return new EditorResult
                     {
@@ -327,6 +434,10 @@ public sealed class ResearchWorkflow
                 cancellationToken);
 
             AddStageOutput(stageOutputs, "Editor", editorResult);
+
+            await _workflowDiagramWriter.EditorCompletedAsync(
+                state.WorkflowId,
+                cancellationToken);
 
             _logger.LogInformation(
                 "Analytical workflow {WorkflowId} completed for topic {Topic}",
@@ -355,6 +466,310 @@ public sealed class ResearchWorkflow
             throw;
         }
     }
+
+    private static void ValidateResearchPayload(ResearchPayload? payload)
+    {
+        if (payload?.Findings is null || payload.Findings.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Researcher returned no findings.");
+        }
+
+        if (payload.Sources is null)
+        {
+            throw new InvalidOperationException(
+                "Researcher returned null sources.");
+        }
+
+        foreach (var source in payload.Sources)
+        {
+            if (string.IsNullOrWhiteSpace(source.Key))
+            {
+                throw new InvalidOperationException(
+                    "Researcher returned a source with an empty key.");
+            }
+
+            if (string.IsNullOrWhiteSpace(source.Url) &&
+                string.IsNullOrWhiteSpace(source.Title))
+            {
+                throw new InvalidOperationException(
+                    $"Researcher source '{source.Key}' has neither URL nor title.");
+            }
+        }
+
+        var duplicateSourceKey = payload.Sources
+            .GroupBy(source => source.Key, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+
+        if (duplicateSourceKey is not null)
+        {
+            throw new InvalidOperationException(
+                $"Researcher returned duplicate source key '{duplicateSourceKey.Key}'.");
+        }
+
+        var sourceKeys = payload.Sources
+            .Select(source => source.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var finding in payload.Findings)
+        {
+            if (string.IsNullOrWhiteSpace(finding.Claim))
+            {
+                throw new InvalidOperationException(
+                    "Researcher returned a finding with an empty claim.");
+            }
+
+            if (string.IsNullOrWhiteSpace(finding.Evidence))
+            {
+                throw new InvalidOperationException(
+                    "Researcher returned a finding with empty evidence.");
+            }
+
+            if (finding.SourceKeys is null)
+            {
+                throw new InvalidOperationException(
+                    "Researcher returned null source keys for a finding.");
+            }
+
+            if (finding.SourceKeys.Any(string.IsNullOrWhiteSpace))
+            {
+                throw new InvalidOperationException(
+                    "Researcher finding contains an empty source key.");
+            }
+
+            var unknownSource = finding.SourceKeys
+                .FirstOrDefault(key => !sourceKeys.Contains(key));
+
+            if (unknownSource is not null)
+            {
+                throw new InvalidOperationException(
+                    $"Researcher finding references unknown source key '{unknownSource}'.");
+            }
+
+            if (finding.Confidence is < 0 or > 1)
+            {
+                throw new InvalidOperationException(
+                    "Researcher returned a confidence value outside the range 0..1.");
+            }
+        }
+    }
+
+    private static void ValidateAnalysisPayload(
+        AnalysisPayload? payload,
+        ResearchResult researchResult)
+    {
+        if (payload?.Conclusions is null || payload.Conclusions.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Analyst returned no conclusions.");
+        }
+
+        var findingIds = researchResult.Findings
+            .Select(finding => finding.Id)
+            .ToHashSet();
+
+        foreach (var conclusion in payload.Conclusions)
+        {
+            if (string.IsNullOrWhiteSpace(conclusion.Conclusion))
+            {
+                throw new InvalidOperationException(
+                    "Analyst returned an empty conclusion.");
+            }
+
+            if (conclusion.SupportingFindingIds is null ||
+                conclusion.SupportingFindingIds.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "Analyst returned a conclusion without supporting findings.");
+            }
+
+            if (conclusion.SupportingFindingIds.Any(id => !findingIds.Contains(id)))
+            {
+                throw new InvalidOperationException(
+                    "Analyst referenced an unknown finding.");
+            }
+        }
+    }
+
+    private static void ValidateFactCheckPayload(
+        FactCheckPayload? payload,
+        AnalysisResult analysisResult)
+    {
+        if (payload?.Items is null || payload.Items.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "FactChecker returned no items.");
+        }
+
+        var conclusionIds = analysisResult.Conclusions
+            .Select(conclusion => conclusion.Id)
+            .ToHashSet();
+
+        foreach (var item in payload.Items)
+        {
+            if (item.ConclusionId == Guid.Empty ||
+                !conclusionIds.Contains(item.ConclusionId))
+            {
+                throw new InvalidOperationException(
+                    $"FactChecker referenced unknown conclusion '{item.ConclusionId}'.");
+            }
+
+            if (string.IsNullOrWhiteSpace(item.Claim))
+            {
+                throw new InvalidOperationException(
+                    "FactChecker returned an item with an empty claim.");
+            }
+
+            if (!Enum.IsDefined(item.Status))
+            {
+                throw new InvalidOperationException(
+                    $"FactChecker returned an unknown status '{item.Status}'.");
+            }
+        }
+
+        var duplicateConclusion = payload.Items
+            .GroupBy(item => item.ConclusionId)
+            .FirstOrDefault(group => group.Count() > 1);
+
+        if (duplicateConclusion is not null)
+        {
+            throw new InvalidOperationException(
+                $"FactChecker checked conclusion '{duplicateConclusion.Key}' more than once.");
+        }
+
+        var checkedConclusionIds = payload.Items
+            .Select(item => item.ConclusionId)
+            .ToHashSet();
+
+        var missingConclusionIds = conclusionIds
+            .Except(checkedConclusionIds)
+            .ToArray();
+
+        if (missingConclusionIds.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"FactChecker did not check {missingConclusionIds.Length} conclusion(s): " +
+                string.Join(", ", missingConclusionIds));
+        }
+
+        if (payload.Items.Count != analysisResult.Conclusions.Count)
+        {
+            throw new InvalidOperationException(
+                "FactChecker must return exactly one item for every analytical conclusion.");
+        }
+    }
+
+    private static void ValidateCriticPayload(
+        CriticPayload? payload,
+        ResearchResult researchResult,
+        AnalysisResult analysisResult)
+    {
+        if (payload is null)
+        {
+            throw new InvalidOperationException(
+                "Critic returned an empty result.");
+        }
+
+        if (payload.Issues is null)
+        {
+            throw new InvalidOperationException(
+                "Critic returned null issues.");
+        }
+
+        if (payload.Conflicts is null)
+        {
+            throw new InvalidOperationException(
+                "Critic returned null conflicts.");
+        }
+
+        foreach (var issue in payload.Issues)
+        {
+            if (string.IsNullOrWhiteSpace(issue.Description))
+            {
+                throw new InvalidOperationException(
+                    "Critic returned an issue with an empty description.");
+            }
+
+            if (!Enum.IsDefined(issue.Severity))
+            {
+                throw new InvalidOperationException(
+                    $"Critic returned an unknown severity '{issue.Severity}'.");
+            }
+        }
+
+        var findingIds = researchResult.Findings
+            .Select(finding => finding.Id)
+            .ToHashSet();
+        var conclusionIds = analysisResult.Conclusions
+            .Select(conclusion => conclusion.Id)
+            .ToHashSet();
+
+        foreach (var conflict in payload.Conflicts)
+        {
+            if (string.IsNullOrWhiteSpace(conflict.Description))
+            {
+                throw new InvalidOperationException(
+                    "Critic returned a conflict with an empty description.");
+            }
+
+            if (!Enum.IsDefined(conflict.Severity) ||
+                !Enum.IsDefined(conflict.Status))
+            {
+                throw new InvalidOperationException(
+                    "Critic returned an unknown conflict severity or status.");
+            }
+
+            if (conflict.FindingIds is null || conflict.ConclusionIds is null)
+            {
+                throw new InvalidOperationException(
+                    "Critic conflict returned null finding/conclusion references.");
+            }
+
+            if (conflict.FindingIds.Count + conflict.ConclusionIds.Count < 2)
+            {
+                throw new InvalidOperationException(
+                    "Critic conflict must reference at least two findings/conclusions.");
+            }
+
+            if (conflict.FindingIds.Any(id => !findingIds.Contains(id)))
+            {
+                throw new InvalidOperationException(
+                    "Critic conflict references an unknown finding.");
+            }
+
+            if (conflict.ConclusionIds.Any(id => !conclusionIds.Contains(id)))
+            {
+                throw new InvalidOperationException(
+                    "Critic conflict references an unknown conclusion.");
+            }
+        }
+
+        var hasBlockingIssue = payload.Issues.Any(
+            issue => issue.Severity == CriticSeverity.Blocking);
+
+        var hasBlockingConflict = payload.Conflicts.Any(
+            conflict => conflict.Severity == CriticSeverity.Blocking &&
+                        conflict.Status != ConflictStatus.Resolved);
+
+        if (payload.HasBlockingIssues != (hasBlockingIssue || hasBlockingConflict))
+        {
+            throw new InvalidOperationException(
+                "Critic returned inconsistent HasBlockingIssues value.");
+        }
+    }
+
+    private static void ValidateEditorPayload(EditorPayload? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload?.Content))
+        {
+            throw new InvalidOperationException(
+                "Editor returned empty content.");
+        }
+    }
+
+    private static string BuildQualityCheckerRejection(QualityCheckerResult result) =>
+        "QualityChecker rejected the result:" + Environment.NewLine +
+        string.Join(Environment.NewLine, result.Reasons.Select(reason => $"- {reason}"));
 
     private async Task<T> ExecuteStepAsync<T>(
         WorkflowState state,
@@ -588,14 +1003,34 @@ public sealed class ResearchWorkflow
         }
     }
 
-    private sealed record ResearchPayload(List<ResearchFinding> Findings);
+    private sealed record ResearchPayload(
+        List<ResearchSourcePayload> Sources,
+        List<ResearchFindingPayload> Findings);
 
-    private sealed record AnalysisPayload(List<string> Conclusions);
+    private sealed record ResearchSourcePayload(
+        string Key,
+        string? Url,
+        string? Title,
+        DateTimeOffset? PublishedAt);
+
+    private sealed record ResearchFindingPayload(
+        string Claim,
+        string Evidence,
+        List<string> SourceKeys,
+        double? Confidence);
+
+    private sealed record AnalysisPayload(
+        List<AnalysisConclusionPayload> Conclusions);
+
+    private sealed record AnalysisConclusionPayload(
+        string Conclusion,
+        List<Guid> SupportingFindingIds);
 
     private sealed record FactCheckPayload(List<FactCheckItem> Items);
 
     private sealed record CriticPayload(
         List<CriticIssue> Issues,
+        List<EvidenceConflict> Conflicts,
         bool HasBlockingIssues);
 
     private sealed record EditorPayload(string Content);

@@ -17,30 +17,28 @@ FactChecker
    ↓
 Critic
    ↓
+QualityChecker
+   ↓
 Editor
    ↓
 Final report
 ```
 
-### Researcher
+### Agent responsibilities and data flow
 
-Creates the evidence-oriented research brief, identifies missing information, and separates evidence from assumptions.
+The **Researcher** receives the original research request and produces a `ResearchResult` containing `Sources` and `Findings`. Each finding carries a `Claim`, supporting `Evidence`, a `Confidence` value, and `SourceIds` that link it to the relevant external sources.
 
-### Analyst
+The **Analyst** receives the complete `ResearchResult`, including the collected sources and findings, and synthesizes them into higher-level `Conclusions`. Each `AnalysisConclusion` must reference the exact `ResearchFinding.Id` values that support it.
 
-Builds the analytical model, identifies drivers and trade-offs, and marks claims that require verification.
+The **FactChecker** receives both `ResearchResult` and `AnalysisResult`. It uses the original findings and evidence to verify every analytical conclusion exactly once and classifies each one as `Verified`, `Unsupported`, or `Contradicted`.
 
-### FactChecker
+The **Critic** receives `ResearchResult`, `AnalysisResult`, and `FactCheckResult`. It evaluates the full evidence chain, identifies logical or methodological weaknesses, records `Issues`, and detects explicit `Conflicts` between findings or conclusions.
 
-Reviews factual claims and classifies them as supported, partially supported, unsupported, or inference.
+The **QualityChecker** receives the outputs of the Researcher, Analyst, FactChecker, and Critic. It does not use an LLM; instead, deterministic C# rules evaluate blocking issues, unresolved conflicts, verified conclusions, and source coverage to decide whether the workflow may continue.
 
-### Critic
+The **Editor** receives only `AnalysisResult`, `FactCheckResult`, `CriticResult`, and `QualityCheckerResult`. It does not re-read raw findings or sources directly; it produces the final report from the already analyzed and reviewed material without introducing new facts.
 
-Looks for one-sided reasoning, hidden assumptions, logical jumps, and missing alternatives.
-
-### Editor
-
-Produces the final report using only claims that survive the previous stages.
+The **Workflow** coordinates the fixed execution order, persists state and agent results in SQLite, supports idempotent resume behavior, and writes the workflow progress diagram to the `logs` directory as each stage completes.
 
 ## Technology
 

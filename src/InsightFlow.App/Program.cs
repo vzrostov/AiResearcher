@@ -2,6 +2,8 @@ using InsightFlow.App.Agents;
 using InsightFlow.App.Configuration;
 using InsightFlow.App.Contracts;
 using InsightFlow.App.Orchestration;
+using InsightFlow.App.Quality;
+using InsightFlow.App.Logging;
 using InsightFlow.App.Persistence;
 using InsightFlow.App.Runtime;
 using Microsoft.EntityFrameworkCore;
@@ -29,12 +31,18 @@ builder.Services
     .AddOptions<WorkflowOptions>()
     .Bind(builder.Configuration.GetSection(WorkflowOptions.SectionName));
 
+builder.Services
+    .AddOptions<QualityCheckerOptions>()
+    .Bind(builder.Configuration.GetSection(QualityCheckerOptions.SectionName));
+
 builder.Services.AddDbContextFactory<InsightFlowDbContext>(options =>
     options.UseSqlite(
         builder.Configuration.GetConnectionString("InsightFlow")
         ?? "Data Source=insightflow.db"));
 
 builder.Services.AddSingleton<AgentFactory>();
+builder.Services.AddSingleton<QualityChecker>();
+builder.Services.AddSingleton<WorkflowDiagramWriter>();
 builder.Services.AddSingleton<ResearchWorkflow>();
 
 builder.Logging.ClearProviders();

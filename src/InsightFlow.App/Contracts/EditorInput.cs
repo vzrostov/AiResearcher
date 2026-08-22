@@ -7,4 +7,6 @@ public sealed record EditorInput : BaseAgentInput
     public required FactCheckResult FactCheck { get; init; }
 
     public required CriticResult Critic { get; init; }
+
+    public required QualityCheckerResult QualityChecker { get; init; }
 }
