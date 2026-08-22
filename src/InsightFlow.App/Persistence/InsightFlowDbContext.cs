@@ -40,8 +40,8 @@ public sealed class InsightFlowDbContext(
             entity.Property(x => x.PayloadJson).IsRequired();
             entity.Property(x => x.ParentResultIdsJson).IsRequired();
 
-            entity.HasIndex(x => x.WorkflowId);
-            entity.HasIndex(x => x.StepId);
+            entity.HasIndex(x => new { x.WorkflowId, x.StepId })
+                .IsUnique();
         });
     }
 }
