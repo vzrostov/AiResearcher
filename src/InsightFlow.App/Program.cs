@@ -1,7 +1,9 @@
 using InsightFlow.App.Agents;
 using InsightFlow.App.Configuration;
 using InsightFlow.App.Orchestration;
+using InsightFlow.App.Persistence;
 using InsightFlow.App.Runtime;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -26,6 +28,11 @@ builder.Services
     .AddOptions<WorkflowOptions>()
     .Bind(builder.Configuration.GetSection(WorkflowOptions.SectionName));
 
+builder.Services.AddDbContextFactory<InsightFlowDbContext>(options =>
+    options.UseSqlite(
+        builder.Configuration.GetConnectionString("InsightFlow")
+        ?? "Data Source=insightflow.db"));
+
 builder.Services.AddSingleton<AgentFactory>();
 builder.Services.AddSingleton<ResearchWorkflow>();
 
@@ -37,6 +44,13 @@ builder.Logging.AddSimpleConsole(options =>
 });
 
 using var host = builder.Build();
+
+await using (var db = await host.Services
+    .GetRequiredService<IDbContextFactory<InsightFlowDbContext>>()
+    .CreateDbContextAsync())
+{
+    await db.Database.EnsureCreatedAsync();
+}
 
 try
 {

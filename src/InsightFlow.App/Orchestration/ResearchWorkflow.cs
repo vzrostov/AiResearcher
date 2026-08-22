@@ -1,10 +1,12 @@
+using System.Text.Json;
 using InsightFlow.App.Agents;
 using InsightFlow.App.Configuration;
 using InsightFlow.App.Contracts;
+using InsightFlow.App.Persistence;
+using InsightFlow.App.Persistence.Entities;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Text.Encodings.Web;
-using System.Text.Json;
 
 namespace InsightFlow.App.Orchestration;
 
@@ -12,24 +14,26 @@ public sealed class ResearchWorkflow
 {
     private static readonly JsonSerializerOptions s_jsonOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true,
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        WriteIndented = true
     };
 
     private readonly AgentFactory _agentFactory;
     private readonly WorkflowOptions _options;
     private readonly OpenAIOptions _openAIOptions;
+    private readonly IDbContextFactory<InsightFlowDbContext> _dbContextFactory;
     private readonly ILogger<ResearchWorkflow> _logger;
 
     public ResearchWorkflow(
         AgentFactory agentFactory,
         IOptions<WorkflowOptions> options,
         IOptions<OpenAIOptions> openAIOptions,
+        IDbContextFactory<InsightFlowDbContext> dbContextFactory,
         ILogger<ResearchWorkflow> logger)
     {
         _agentFactory = agentFactory;
         _options = options.Value;
         _openAIOptions = openAIOptions.Value;
+        _dbContextFactory = dbContextFactory;
         _logger = logger;
     }
 
@@ -61,6 +65,12 @@ public sealed class ResearchWorkflow
             "Starting analytical workflow {WorkflowId} for topic {Topic}",
             state.WorkflowId,
             request.Topic);
+
+        await PersistStateAsync(
+            state,
+            request.Topic,
+            result: null,
+            cancellationToken);
 
         try
         {
@@ -95,9 +105,16 @@ public sealed class ResearchWorkflow
                 });
 
             state.Results.Add(researchResult);
+            state.CurrentStep = WorkflowStep.Analysis;
+
+            await PersistStateAsync(
+                state,
+                request.Topic,
+                researchResult,
+                cancellationToken);
+
             AddStageOutput(stageOutputs, "Researcher", researchResult);
 
-            state.CurrentStep = WorkflowStep.Analysis;
             var analysisStepId = Guid.NewGuid();
 
             var analysisResult = await RunAgentAsync(
@@ -134,9 +151,16 @@ public sealed class ResearchWorkflow
                 });
 
             state.Results.Add(analysisResult);
+            state.CurrentStep = WorkflowStep.FactCheck;
+
+            await PersistStateAsync(
+                state,
+                request.Topic,
+                analysisResult,
+                cancellationToken);
+
             AddStageOutput(stageOutputs, "Analyst", analysisResult);
 
-            state.CurrentStep = WorkflowStep.FactCheck;
             var factCheckStepId = Guid.NewGuid();
 
             var factCheckResult = await RunAgentAsync(
@@ -170,9 +194,16 @@ public sealed class ResearchWorkflow
                 });
 
             state.Results.Add(factCheckResult);
+            state.CurrentStep = WorkflowStep.Critic;
+
+            await PersistStateAsync(
+                state,
+                request.Topic,
+                factCheckResult,
+                cancellationToken);
+
             AddStageOutput(stageOutputs, "FactChecker", factCheckResult);
 
-            state.CurrentStep = WorkflowStep.Critic;
             var criticStepId = Guid.NewGuid();
 
             var criticResult = await RunAgentAsync(
@@ -207,9 +238,16 @@ public sealed class ResearchWorkflow
                 });
 
             state.Results.Add(criticResult);
+            state.CurrentStep = WorkflowStep.Editing;
+
+            await PersistStateAsync(
+                state,
+                request.Topic,
+                criticResult,
+                cancellationToken);
+
             AddStageOutput(stageOutputs, "Critic", criticResult);
 
-            state.CurrentStep = WorkflowStep.Editing;
 
             var editorInput = new EditorInput
             {
@@ -247,6 +285,12 @@ public sealed class ResearchWorkflow
             state.Results.Add(editorResult);
             state.Status = WorkflowStatus.Completed;
 
+            await PersistStateAsync(
+                state,
+                request.Topic,
+                editorResult,
+                cancellationToken);
+
             AddStageOutput(stageOutputs, "Editor", editorResult);
 
             _logger.LogInformation(
@@ -261,6 +305,12 @@ public sealed class ResearchWorkflow
             state.Status = WorkflowStatus.Failed;
             state.Error = exception.Message;
 
+            await PersistStateAsync(
+                state,
+                request.Topic,
+                result: null,
+                CancellationToken.None);
+
             _logger.LogError(
                 exception,
                 "Analytical workflow {WorkflowId} failed at step {WorkflowStep}",
@@ -269,6 +319,71 @@ public sealed class ResearchWorkflow
 
             throw;
         }
+    }
+
+    private async Task PersistStateAsync(
+        WorkflowState state,
+        string topic,
+        BaseAgentResult? result,
+        CancellationToken cancellationToken)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+
+        var execution = await db.WorkflowExecutions.FindAsync(
+            [state.WorkflowId],
+            cancellationToken);
+
+        var now = DateTimeOffset.UtcNow;
+
+        if (execution is null)
+        {
+            execution = new WorkflowExecutionEntity
+            {
+                WorkflowId = state.WorkflowId,
+                Topic = topic,
+                Status = state.Status,
+                CurrentStep = state.CurrentStep,
+                Error = state.Error,
+                StartedAt = now,
+                UpdatedAt = now
+            };
+
+            db.WorkflowExecutions.Add(execution);
+        }
+        else
+        {
+            execution.Status = state.Status;
+            execution.CurrentStep = state.CurrentStep;
+            execution.Error = state.Error;
+            execution.UpdatedAt = now;
+
+            if (state.Status == WorkflowStatus.Completed)
+            {
+                execution.CompletedAt = now;
+            }
+        }
+
+        if (result is not null)
+        {
+            db.AgentResults.Add(new AgentResultEntity
+            {
+                Id = result.Id,
+                WorkflowId = result.WorkflowId,
+                StepId = result.StepId,
+                ProducedByAgent = result.ProducedByAgent,
+                ProducedAt = result.ProducedAt,
+                ResultType = result.GetType().Name,
+                PayloadJson = JsonSerializer.Serialize(
+                    result,
+                    result.GetType(),
+                    s_jsonOptions),
+                ParentResultIdsJson = JsonSerializer.Serialize(
+                    result.ParentResultIds,
+                    s_jsonOptions)
+            });
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
     }
 
     private async Task<T> RunAgentAsync<T>(
