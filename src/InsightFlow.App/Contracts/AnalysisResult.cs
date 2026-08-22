@@ -6,5 +6,6 @@ public sealed record AnalysisResult : BaseAgentResult
 }
 
 public sealed record AnalysisConclusion(
+    Guid Id,
     string Conclusion,
-    IReadOnlyList<Guid> SupportingResultIds);
+    IReadOnlyList<Guid> SupportingFindingIds);

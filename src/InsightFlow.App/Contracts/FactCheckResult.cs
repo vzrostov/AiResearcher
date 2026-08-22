@@ -6,9 +6,10 @@ public sealed record FactCheckResult : BaseAgentResult
 }
 
 public sealed record FactCheckItem(
+    Guid ConclusionId,
     string Claim,
     FactCheckStatus Status,
-    string? Comment = null);
+    string? Comment);
 
 public enum FactCheckStatus
 {
