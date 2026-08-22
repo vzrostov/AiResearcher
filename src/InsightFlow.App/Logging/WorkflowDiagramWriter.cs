@@ -7,76 +7,156 @@ public sealed class WorkflowDiagramWriter
 {
     private readonly string _logsDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
 
-    public async Task WriteAsync(
+    public Task StartAsync(
         Guid workflowId,
         ResearchRequest request,
-        ResearchResult research,
-        AnalysisResult analysis,
-        FactCheckResult factCheck,
-        CriticResult critic,
-        QualityCheckerResult qualityChecker,
-        EditorResult? editorResult,
+        CancellationToken cancellationToken)
+    {
+        var topic = request.Topic.ReplaceLineEndings(" ");
+
+        return AppendIfMissingAsync(
+            workflowId,
+            marker: "USER",
+            $"USER{Environment.NewLine}" +
+            $" │{Environment.NewLine}" +
+            $" │ 1 request {topic}{Environment.NewLine}" +
+            $" ▼{Environment.NewLine}",
+            cancellationToken);
+    }
+
+    public Task ResearchCompletedAsync(
+        Guid workflowId,
+        ResearchResult result,
+        CancellationToken cancellationToken) =>
+        AppendIfMissingAsync(
+            workflowId,
+            marker: "Researcher",
+            $"Researcher{Environment.NewLine}" +
+            $" │{Environment.NewLine}" +
+            $" ├─ {result.Sources.Count} Sources{Environment.NewLine}" +
+            $" └─ {result.Findings.Count} Findings{Environment.NewLine}" +
+            $"       │{Environment.NewLine}" +
+            $"       ▼{Environment.NewLine}",
+            cancellationToken);
+
+    public Task AnalysisCompletedAsync(
+        Guid workflowId,
+        AnalysisResult result,
+        CancellationToken cancellationToken) =>
+        AppendIfMissingAsync(
+            workflowId,
+            marker: "Analyst",
+            $"Analyst{Environment.NewLine}" +
+            $" │{Environment.NewLine}" +
+            $" └─ {result.Conclusions.Count} Conclusions{Environment.NewLine}" +
+            $"       │{Environment.NewLine}" +
+            $"       ▼{Environment.NewLine}",
+            cancellationToken);
+
+    public Task FactCheckCompletedAsync(
+        Guid workflowId,
+        FactCheckResult result,
+        CancellationToken cancellationToken) =>
+        AppendIfMissingAsync(
+            workflowId,
+            marker: "FactChecker",
+            $"FactChecker{Environment.NewLine}" +
+            $" │{Environment.NewLine}" +
+            $" └─ {result.Items.Count} FactCheckItems{Environment.NewLine}" +
+            $"       │{Environment.NewLine}" +
+            $"       ▼{Environment.NewLine}",
+            cancellationToken);
+
+    public Task CriticCompletedAsync(
+        Guid workflowId,
+        CriticResult result,
+        CancellationToken cancellationToken) =>
+        AppendIfMissingAsync(
+            workflowId,
+            marker: "Critic",
+            $"Critic{Environment.NewLine}" +
+            $" │{Environment.NewLine}" +
+            $" ├─ {result.Issues.Count} Issues{Environment.NewLine}" +
+            $" └─ {result.Conflicts.Count} Conflicts{Environment.NewLine}" +
+            $"       │{Environment.NewLine}" +
+            $"       ▼{Environment.NewLine}",
+            cancellationToken);
+
+    public Task QualityCheckerCompletedAsync(
+        Guid workflowId,
+        QualityCheckerResult result,
+        CancellationToken cancellationToken) =>
+        AppendIfMissingAsync(
+            workflowId,
+            marker: "QualityChecker",
+            $"QualityChecker{Environment.NewLine}" +
+            $" │{Environment.NewLine}" +
+            $" └─ 1 QualityCheckerResult ({result.Decision}){Environment.NewLine}" +
+            $"       │{Environment.NewLine}" +
+            $"       ▼{Environment.NewLine}",
+            cancellationToken);
+
+    public Task EditorCompletedAsync(
+        Guid workflowId,
+        CancellationToken cancellationToken) =>
+        AppendIfMissingAsync(
+            workflowId,
+            marker: "Editor",
+            $"Editor{Environment.NewLine}" +
+            $" │{Environment.NewLine}" +
+            $" └─ 1 EditorResult{Environment.NewLine}" +
+            $"       │{Environment.NewLine}" +
+            $"       ▼{Environment.NewLine}" +
+            $"FINAL REPORT{Environment.NewLine}",
+            cancellationToken);
+
+    public Task RejectedAsync(
+        Guid workflowId,
+        CancellationToken cancellationToken) =>
+        AppendIfMissingAsync(
+            workflowId,
+            marker: "REJECTED",
+            $"REJECTED{Environment.NewLine}",
+            cancellationToken);
+
+    private async Task AppendIfMissingAsync(
+        Guid workflowId,
+        string marker,
+        string text,
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(_logsDirectory);
 
-        var topic = request.Topic.ReplaceLineEndings(" ");
-        var builder = new StringBuilder();
+        var path = GetPath(workflowId);
 
-        builder.AppendLine("USER");
-        builder.AppendLine(" │");
-        builder.AppendLine($" │ 1 request {topic}");
-        builder.AppendLine(" ▼");
-        builder.AppendLine("Researcher");
-        builder.AppendLine(" │");
-        builder.AppendLine($" ├─ {research.Sources.Count} Sources");
-        builder.AppendLine($" └─ {research.Findings.Count} Findings");
-        builder.AppendLine("       │");
-        builder.AppendLine("       ▼");
-        builder.AppendLine("Analyst");
-        builder.AppendLine(" │");
-        builder.AppendLine($" └─ {analysis.Conclusions.Count} Conclusions");
-        builder.AppendLine("       │");
-        builder.AppendLine("       ▼");
-        builder.AppendLine("FactChecker");
-        builder.AppendLine(" │");
-        builder.AppendLine($" └─ {factCheck.Items.Count} FactCheckItems");
-        builder.AppendLine("       │");
-        builder.AppendLine("       ▼");
-        builder.AppendLine("Critic");
-        builder.AppendLine(" │");
-        builder.AppendLine($" ├─ {critic.Issues.Count} Issues");
-        builder.AppendLine($" └─ {critic.Conflicts.Count} Conflicts");
-        builder.AppendLine("       │");
-        builder.AppendLine("       ▼");
-        builder.AppendLine("QualityChecker");
-        builder.AppendLine(" │");
-        builder.AppendLine($" └─ 1 QualityCheckerResult ({qualityChecker.Decision})");
-        builder.AppendLine("       │");
-        builder.AppendLine("       ▼");
+        if (File.Exists(path))
+        {
+            var existing = await File.ReadAllTextAsync(
+                path,
+                Encoding.UTF8,
+                cancellationToken);
 
-        if (editorResult is null)
-        {
-            builder.AppendLine("REJECTED");
-        }
-        else
-        {
-            builder.AppendLine("Editor");
-            builder.AppendLine(" │");
-            builder.AppendLine(" └─ 1 EditorResult");
-            builder.AppendLine("       │");
-            builder.AppendLine("       ▼");
-            builder.AppendLine("FINAL REPORT");
+            if (ContainsLine(existing, marker))
+            {
+                return;
+            }
         }
 
-        var path = Path.Combine(
-            _logsDirectory,
-            $"workflow-{workflowId:N}.txt");
-
-        await File.WriteAllTextAsync(
+        await File.AppendAllTextAsync(
             path,
-            builder.ToString(),
+            text,
             Encoding.UTF8,
             cancellationToken);
     }
+
+    private string GetPath(Guid workflowId) =>
+        Path.Combine(
+            _logsDirectory,
+            $"workflow-{workflowId:N}.txt");
+
+    private static bool ContainsLine(string text, string marker) =>
+        text.Split(
+                ["\r\n", "\n"],
+                StringSplitOptions.None)
+            .Any(line => string.Equals(line, marker, StringComparison.Ordinal));
 }

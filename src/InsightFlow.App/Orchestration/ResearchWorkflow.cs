@@ -141,6 +141,11 @@ public sealed class ResearchWorkflow
                 request.Topic);
         }
 
+        await _workflowDiagramWriter.StartAsync(
+            state.WorkflowId,
+            request,
+            cancellationToken);
+
         await PersistStateAsync(
             state,
             request,
@@ -212,6 +217,11 @@ public sealed class ResearchWorkflow
 
             AddStageOutput(stageOutputs, "Researcher", researchResult);
 
+            await _workflowDiagramWriter.ResearchCompletedAsync(
+                state.WorkflowId,
+                researchResult,
+                cancellationToken);
+
             var analysisResult = await ExecuteStepAsync(
                 state,
                 request,
@@ -253,6 +263,11 @@ public sealed class ResearchWorkflow
 
             AddStageOutput(stageOutputs, "Analyst", analysisResult);
 
+            await _workflowDiagramWriter.AnalysisCompletedAsync(
+                state.WorkflowId,
+                analysisResult,
+                cancellationToken);
+
             var factCheckResult = await ExecuteStepAsync(
                 state,
                 request,
@@ -289,6 +304,11 @@ public sealed class ResearchWorkflow
                 cancellationToken);
 
             AddStageOutput(stageOutputs, "FactChecker", factCheckResult);
+
+            await _workflowDiagramWriter.FactCheckCompletedAsync(
+                state.WorkflowId,
+                factCheckResult,
+                cancellationToken);
 
             var criticResult = await ExecuteStepAsync(
                 state,
@@ -330,6 +350,11 @@ public sealed class ResearchWorkflow
 
             AddStageOutput(stageOutputs, "Critic", criticResult);
 
+            await _workflowDiagramWriter.CriticCompletedAsync(
+                state.WorkflowId,
+                criticResult,
+                cancellationToken);
+
             var qualityCheckerResult = _qualityChecker.Evaluate(
                 researchResult,
                 analysisResult,
@@ -337,6 +362,11 @@ public sealed class ResearchWorkflow
                 criticResult);
 
             AddStageOutput(stageOutputs, "QualityChecker", qualityCheckerResult);
+
+            await _workflowDiagramWriter.QualityCheckerCompletedAsync(
+                state.WorkflowId,
+                qualityCheckerResult,
+                cancellationToken);
 
             if (qualityCheckerResult.Decision == QualityCheckerDecision.Reject)
             {
@@ -353,15 +383,8 @@ public sealed class ResearchWorkflow
                     state.WorkflowId,
                     string.Join("; ", qualityCheckerResult.Reasons));
 
-                await _workflowDiagramWriter.WriteAsync(
+                await _workflowDiagramWriter.RejectedAsync(
                     state.WorkflowId,
-                    request,
-                    researchResult,
-                    analysisResult,
-                    factCheckResult,
-                    criticResult,
-                    qualityCheckerResult,
-                    editorResult: null,
                     cancellationToken);
 
                 return new WorkflowResult(
@@ -410,15 +433,8 @@ public sealed class ResearchWorkflow
 
             AddStageOutput(stageOutputs, "Editor", editorResult);
 
-            await _workflowDiagramWriter.WriteAsync(
+            await _workflowDiagramWriter.EditorCompletedAsync(
                 state.WorkflowId,
-                request,
-                researchResult,
-                analysisResult,
-                factCheckResult,
-                criticResult,
-                qualityCheckerResult,
-                editorResult,
                 cancellationToken);
 
             _logger.LogInformation(
