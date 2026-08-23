@@ -1,0 +1,19 @@
+{
+  "min_scores": {
+    "relevance": 0.75,
+    "groundedness": 0.7,
+    "completeness": 0.7,
+    "consistency": 0.75,
+    "task_adherence": 0.75,
+    "hard_pass_rate": 0.9
+  },
+  "max_regression": {
+    "relevance": 0.05,
+    "groundedness": 0.05,
+    "completeness": 0.05,
+    "consistency": 0.05,
+    "task_adherence": 0.05,
+    "hard_pass_rate": 0.05
+  },
+  "critical_cases_must_pass": true
+}
