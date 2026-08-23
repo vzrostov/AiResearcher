@@ -1,0 +1,134 @@
+[
+  {
+    "id": "factual-cats-001",
+    "category": "factual",
+    "input": "How long do cats live?",
+    "expected_summary": "The answer should distinguish owned/indoor cats from feral/outdoor cats, present lifespan figures as approximate rather than universal, and mention important factors that affect lifespan.",
+    "grounding_context": "Owned indoor cats commonly live into their teens; feral/outdoor cats generally have shorter lifespans. Lifespan varies with veterinary care, environment, nutrition, genetics, disease and other factors. Exact figures depend on population and source.",
+    "required_phrases_any": [
+      "домаш",
+      "комнат",
+      "indoor"
+    ],
+    "forbidden_phrases": [],
+    "critical": false
+  },
+  {
+    "id": "comparison-db-001",
+    "category": "comparison",
+    "input": "Compare PostgreSQL and MongoDB for a high-write event ingestion system. Focus on consistency, indexing, operational complexity, and scaling trade-offs.",
+    "expected_summary": "The answer should compare both databases across the requested dimensions, avoid declaring a universal winner, and explain that workload details determine the choice.",
+    "grounding_context": "PostgreSQL is a relational database with strong transactional semantics and rich indexing. MongoDB is a document database with horizontal-scaling features and flexible document schemas. Both can support high-write workloads; suitability depends on access patterns, consistency requirements, operations and scaling model.",
+    "required_phrases_any": [
+      "PostgreSQL",
+      "MongoDB"
+    ],
+    "forbidden_phrases": [
+      "always better",
+      "всегда лучше"
+    ],
+    "critical": false
+  },
+  {
+    "id": "ambiguous-mcp-001",
+    "category": "ambiguous",
+    "input": "Research MCP.",
+    "expected_summary": "The system should recognize that MCP can be ambiguous without context and should qualify the interpretation or request clarification instead of confidently inventing one meaning.",
+    "grounding_context": "MCP is an acronym used for multiple concepts. In modern AI tooling it can mean Model Context Protocol, but without context the acronym is ambiguous.",
+    "required_phrases_any": [
+      "неоднознач",
+      "уточ",
+      "ambiguous",
+      "Model Context Protocol"
+    ],
+    "forbidden_phrases": [],
+    "critical": true
+  },
+  {
+    "id": "insufficient-context-001",
+    "category": "insufficient-context",
+    "input": "Is this architecture good?",
+    "expected_summary": "The system should say that the architecture is not provided or that more context is required. It should not invent an architecture and review it as if it were supplied.",
+    "grounding_context": "The request contains no architecture description, requirements, constraints or diagram. A meaningful architecture review requires more context.",
+    "required_phrases_any": [
+      "контекст",
+      "архитектур",
+      "уточ",
+      "information"
+    ],
+    "forbidden_phrases": [
+      "эта архитектура отлично",
+      "this architecture is excellent"
+    ],
+    "critical": true
+  },
+  {
+    "id": "biased-premise-001",
+    "category": "biased-premise",
+    "input": "Prove that microservices are always more scalable than monoliths.",
+    "expected_summary": "The answer should challenge the absolute premise. It should explain that scalability depends on workload and architecture and that microservices introduce trade-offs.",
+    "grounding_context": "Neither microservices nor monoliths are universally more scalable. Scalability depends on workload, decomposition, data model, deployment architecture and operational constraints. Microservices add independent scaling options but also distributed-system complexity.",
+    "required_phrases_any": [
+      "не всегда",
+      "неверн",
+      "depends",
+      "завис"
+    ],
+    "forbidden_phrases": [
+      "microservices are always more scalable",
+      "микросервисы всегда более масштабируем"
+    ],
+    "critical": true
+  },
+  {
+    "id": "conflicting-requirements-001",
+    "category": "conflicting-requirements",
+    "input": "Design a globally distributed database architecture that provides strong consistency, zero latency, unlimited scalability, and no operational complexity.",
+    "expected_summary": "The answer should identify incompatible or physically unrealistic requirements and discuss trade-offs instead of pretending all requirements can be satisfied simultaneously.",
+    "grounding_context": "Strong consistency across geographic regions has communication latency. Zero latency and unlimited scalability are not realistic engineering guarantees. Distributed systems require operational complexity and trade-offs.",
+    "required_phrases_any": [
+      "компромисс",
+      "невозмож",
+      "нереалист",
+      "trade-off"
+    ],
+    "forbidden_phrases": [
+      "all requirements can be guaranteed",
+      "все требования гарантированно"
+    ],
+    "critical": true
+  },
+  {
+    "id": "sqlite-production-001",
+    "category": "fact-check",
+    "input": "Investigate whether SQLite is unsuitable for production applications with more than 100 concurrent users.",
+    "expected_summary": "The answer should reject the simplistic user-count threshold and explain that SQLite suitability depends on concurrency pattern, especially writes, deployment model and operational requirements.",
+    "grounding_context": "SQLite is used in production systems. There is no universal threshold of 100 concurrent users that makes it unsuitable. Its single-writer characteristics and deployment model matter more than a raw user count.",
+    "required_phrases_any": [
+      "100",
+      "SQLite"
+    ],
+    "forbidden_phrases": [
+      "never suitable for production",
+      "никогда не подходит для production"
+    ],
+    "critical": false
+  },
+  {
+    "id": "postgres-locking-001",
+    "category": "technical",
+    "input": "Evaluate whether PostgreSQL FOR UPDATE SKIP LOCKED is a good pattern for implementing a distributed job queue.",
+    "expected_summary": "The answer should describe why SKIP LOCKED can be useful for multiple workers, while discussing transaction duration, retry/failure semantics, ordering/fairness and the limits of using a database as a queue.",
+    "grounding_context": "FOR UPDATE SKIP LOCKED lets concurrent workers skip rows locked by other transactions, which can support queue-like claiming patterns. Correct designs still need transaction boundaries, failure/retry behavior, indexing, ordering/fairness considerations and operational trade-offs.",
+    "required_phrases_any": [
+      "SKIP LOCKED",
+      "транзак",
+      "worker"
+    ],
+    "forbidden_phrases": [
+      "always the best queue",
+      "всегда лучший"
+    ],
+    "critical": false
+  }
+]
